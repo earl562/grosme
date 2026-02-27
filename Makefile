@@ -1,16 +1,14 @@
-.PHONY: setup run lint clean test check-ollama format run-image run-text
+.PHONY: setup run lint clean test check-ollama format run-text uat uat-query uat-memo
 
 setup:
 	uv sync
+	uv run scrapling install
 	@echo "Checking Ollama..."
 	@ollama list | grep -q "lfm2.5-thinking" || ollama pull lfm2.5-thinking:1.2b
 	@echo "Setup complete."
 
 run:
 	uv run python main.py
-
-run-image:
-	uv run python main.py --input input/
 
 run-text:
 	uv run python main.py --text "milk, eggs, bread, chicken breast"
@@ -24,6 +22,15 @@ format:
 
 test:
 	uv run pytest tests/ -v
+
+uat:
+	uv run python tests/uat_runner.py
+
+uat-query:
+	uv run python tests/uat_runner.py --query
+
+uat-memo:
+	uv run python tests/uat_runner.py --memo
 
 check-ollama:
 	@ollama list | grep -q "lfm2.5-thinking" && echo "Model ready" || echo "Run: ollama pull lfm2.5-thinking:1.2b"

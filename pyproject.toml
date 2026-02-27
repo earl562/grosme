@@ -1,13 +1,16 @@
 [project]
 name = "grosme"
-version = "0.1.0"
+version = "0.2.0"
 description = "Grocery Shopping Made Easy — Apple Notes to Walmart cart"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.27",
+    "ollama>=0.4",
     "pydantic>=2.0",
+    "python-dotenv>=1.2.1",
     "rich>=13.0",
+    "scrapling[fetchers]>=0.4",
     "typer>=0.12",
 ]
 
@@ -18,12 +21,9 @@ grosme = "main:app"
 packages = ["."]
 only-include = [
     "main.py",
-    "model.py",
-    "models.py",
-    "notes.py",
+    "agent.py",
+    "schemas.py",
     "tools.py",
-    "walmart_search.py",
-    "notify.py",
 ]
 
 [build-system]
