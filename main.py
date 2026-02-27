@@ -1,5 +1,9 @@
 """grosme — Grocery Shopping Made Easy. CLI entrypoint."""
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import json
 from datetime import datetime
 from pathlib import Path
@@ -10,18 +14,14 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from model import check_ollama
-from models import GroceryList
-from notes import (
+from agent import check_ollama, run_conversation
+from tools import (
     fetch_note_content,
+    fetch_notes_from_folder,
     fetch_notes_list,
-    ingest_directory,
-    ingest_from_memo,
-    ingest_text,
-    process_notes,
+    notify_user,
+    search_walmart,
 )
-from notify import notify_user
-from walmart_search import process_grocery_list
 
 console = Console()
 app = typer.Typer(add_completion=False)
@@ -37,103 +37,121 @@ BANNER = r"""
   Grocery Shopping Made Easy
 """
 
+# Tools and function registry for the agent
+TOOLS = [search_walmart, fetch_notes_list, fetch_note_content, notify_user]
+AVAILABLE_FUNCTIONS = {
+    "search_walmart": search_walmart,
+    "fetch_notes_list": fetch_notes_list,
+    "fetch_note_content": fetch_note_content,
+    "fetch_notes_from_folder": fetch_notes_from_folder,
+    "notify_user": notify_user,
+}
+
 
 def _display_banner() -> None:
     """Show the grosme startup banner."""
     console.print(Panel(BANNER, style="bold green", expand=False))
 
 
-def _display_items_table(items: list) -> None:
-    """Display extracted grocery items in a Rich table."""
-    table = Table(title="Extracted Grocery Items")
+def _display_results_table(tool_results: list[dict]) -> None:
+    """Display a Rich table from collected search_walmart tool results."""
+    search_results = [r for r in tool_results if r["tool"] == "search_walmart"]
+    if not search_results:
+        return
+
+    table = Table(title="Walmart Grocery List")
     table.add_column("#", style="dim", width=4)
     table.add_column("Item", style="bold")
-    table.add_column("Qty", justify="right")
-    table.add_column("Unit")
-    table.add_column("Category", style="cyan")
-
-    for i, item in enumerate(items, 1):
-        table.add_row(
-            str(i),
-            item.name,
-            str(item.quantity),
-            item.unit or "-",
-            item.category or "-",
-        )
-
-    console.print(table)
-
-
-def _display_results_table(grocery_list: GroceryList) -> None:
-    """Display matched products in a Rich table."""
-    table = Table(title="Walmart Product Matches")
-    table.add_column("#", style="dim", width=4)
-    table.add_column("Item", style="bold")
-    table.add_column("Matched Product")
+    table.add_column("Best Match")
     table.add_column("Price", justify="right", style="green")
-    table.add_column("Status", justify="center")
+    table.add_column("Size")
 
-    for i, matched in enumerate(grocery_list.items, 1):
-        if matched.status == "matched" and matched.matched_product:
-            product_name = matched.matched_product.name[:50]
-            price = (
-                f"${matched.matched_product.price:.2f}"
-                if matched.matched_product.price
-                else "-"
-            )
-            status = "[green]Matched[/]"
-        elif matched.status == "partial" and matched.matched_product:
-            product_name = matched.matched_product.name[:50]
-            price = (
-                f"${matched.matched_product.price:.2f}"
-                if matched.matched_product.price
-                else "-"
-            )
-            status = "[yellow]Partial[/]"
+    total = 0.0
+    for i, sr in enumerate(search_results, 1):
+        query = sr["args"].get("query", "?")
+        products = sr["result"]
+        if products and isinstance(products, list) and len(products) > 0:
+            top = products[0]
+            name = (top.get("name") or "?")[:55]
+            price_val = top.get("price")
+            price = f"${price_val:.2f}" if price_val else "-"
+            size = top.get("size") or "-"
+            if price_val:
+                total += float(price_val)
         else:
-            product_name = "-"
+            name = "[red]No results[/]"
             price = "-"
-            status = "[red]Not Found[/]"
-
-        table.add_row(
-            str(i),
-            matched.grocery_item.name,
-            product_name,
-            price,
-            status,
-        )
+            size = "-"
+        table.add_row(str(i), query, name, price, size)
 
     console.print(table)
-    console.print(f"\n[bold]{grocery_list.summary()}[/]")
+    console.print(f"\n[bold]Estimated total: ${total:.2f}[/]")
+
+    item_count = len(search_results)
+    found = sum(1 for sr in search_results if sr["result"])
+    console.print(f"[dim]{found}/{item_count} items found[/]")
 
 
-def _save_results(grocery_list: GroceryList, output_dir: Path) -> Path:
-    """Save the grocery list results to a JSON file."""
+def _save_results(tool_results: list[dict], output_dir: Path, source: str) -> Path:
+    """Save the agent results to a JSON file."""
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = output_dir / f"grocery_list_{timestamp}.json"
 
+    search_results = [r for r in tool_results if r["tool"] == "search_walmart"]
+    items = []
+    for sr in search_results:
+        query = sr["args"].get("query", "")
+        products = sr["result"]
+        top = products[0] if products and isinstance(products, list) else None
+        items.append({
+            "query": query,
+            "matched_product": top,
+            "status": "matched" if top else "not_found",
+        })
+
     data = {
-        "created_at": grocery_list.created_at.isoformat(),
-        "source": grocery_list.source_file,
-        "items": [
-            {
-                "grocery_item": m.grocery_item.model_dump(),
-                "matched_product": (
-                    m.matched_product.model_dump() if m.matched_product else None
-                ),
-                "confidence": m.confidence,
-                "status": m.status,
-            }
-            for m in grocery_list.items
-        ],
-        "total_estimated_cost": grocery_list.total_estimated_cost,
-        "matched": grocery_list.matched_count(),
-        "unmatched": len(grocery_list.items) - grocery_list.matched_count(),
+        "created_at": datetime.now().isoformat(),
+        "source": source,
+        "items": items,
     }
 
     output_file.write_text(json.dumps(data, indent=2, default=str))
     return output_file
+
+
+def _parse_note_lines(content: str) -> list[str]:
+    """Parse note content into grocery item lines.
+
+    Keeps full brand/size detail. Only strips quantity suffixes (× 2)
+    and skips blank/title lines.
+    """
+    import re
+
+    items: list[str] = []
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or len(line) < 3:
+            continue
+        # Skip title-like lines (e.g. "Walmart Order")
+        if line.lower().startswith(("walmart", "grocery", "shopping", "#")):
+            continue
+        # Strip quantity suffix like "× 2" or "x 3"
+        line = re.sub(r"\s*[×x]\s*\d+\s*$", "", line, flags=re.IGNORECASE)
+        line = line.strip()
+        if line:
+            items.append(line)
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in items:
+        key = item.lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+
+    return unique
 
 
 def _pick_note_interactive() -> str | None:
@@ -149,13 +167,12 @@ def _pick_note_interactive() -> str | None:
         console.print("[bold red]No notes found.[/]")
         return None
 
-    # Show notes in a table
     table = Table(title="Apple Notes")
     table.add_column("#", style="dim", width=5)
     table.add_column("Folder", style="cyan")
     table.add_column("Title")
 
-    for note in notes[:30]:  # Show first 30
+    for note in notes[:30]:
         table.add_row(str(note["index"]), note["folder"], note["title"][:70])
 
     console.print(table)
@@ -163,7 +180,6 @@ def _pick_note_interactive() -> str | None:
     if len(notes) > 30:
         console.print(f"[dim]...and {len(notes) - 30} more notes[/]")
 
-    # Prompt for selection
     console.print()
     selection = typer.prompt("Enter note # to use as grocery list (0 to cancel)")
     try:
@@ -188,9 +204,6 @@ def _pick_note_interactive() -> str | None:
 
 @app.command()
 def main(
-    input: Optional[Path] = typer.Option(
-        None, "--input", "-i", help="Input directory or file path."
-    ),
     text: Optional[str] = typer.Option(
         None, "--text", "-t", help="Direct text grocery list."
     ),
@@ -204,10 +217,10 @@ def main(
         Path("output"), "--output", "-o", help="Output directory."
     ),
     notify: bool = typer.Option(
-        False, "--notify", "-n", help="Send notification when done (Phase 2)."
+        False, "--notify", "-n", help="Send notification when done."
     ),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", "-d", help="Extract items only, skip Walmart search."
+    verbose: bool = typer.Option(
+        True, "--verbose/--quiet", "-v/-q", help="Show agent reasoning."
     ),
 ) -> None:
     """grosme — Grocery Shopping Made Easy."""
@@ -222,22 +235,27 @@ def main(
                 "[bold]ollama pull lfm2.5-thinking:latest[/]"
             )
             raise typer.Exit(1)
-    console.print("[green]Ollama is ready.[/]")
+    console.print("[green]Ollama is ready.[/]\n")
 
-    # --- Ingestion ---
+    # --- Build item list based on input mode ---
     source_label = ""
+    parsed_items: list[str] | None = None
 
     if text:
-        console.print("[bold]Using direct text input.[/]")
-        notes_inputs = [ingest_text(text)]
         source_label = "direct text"
 
     elif note is not None:
-        console.print(f"[bold]Reading Apple Note #{note} via Memo...[/]")
-        notes_inputs = [ingest_from_memo(note)]
-        content = notes_inputs[0].raw_content
-        if isinstance(content, str) and content:
-            console.print(Panel(content[:500], title=f"Note #{note}", expand=False))
+        with console.status(f"[bold]Reading Apple Note #{note} via Memo...[/]"):
+            content = fetch_note_content(note)
+        if not content:
+            console.print("[bold red]Could not read note content.[/]")
+            raise typer.Exit(1)
+        console.print(Panel(content[:500], title=f"Note #{note}", expand=False))
+        parsed_items = _parse_note_lines(content)
+        if not parsed_items:
+            console.print("[bold red]No grocery items found in note.[/]")
+            raise typer.Exit(1)
+        console.print(f"[dim]Found {len(parsed_items)} items in note[/]")
         source_label = f"Apple Note #{note}"
 
     elif notes:
@@ -245,79 +263,81 @@ def main(
         if not content:
             console.print("[yellow]No note selected.[/]")
             raise typer.Exit(0)
-        notes_inputs = [ingest_text(content)]
+        parsed_items = _parse_note_lines(content)
+        if not parsed_items:
+            console.print("[bold red]No grocery items found in note.[/]")
+            raise typer.Exit(0)
+        console.print(f"[dim]Found {len(parsed_items)} items in note[/]")
         source_label = "Apple Notes"
 
-    elif input:
-        input_path = Path(input)
-        if input_path.is_dir():
-            with console.status("[bold]Scanning notes..."):
-                notes_inputs = ingest_directory(input_path)
-        elif input_path.is_file():
-            from notes import ingest_file
-
-            note_file = ingest_file(input_path)
-            notes_inputs = [note_file] if note_file else []
-        else:
-            console.print(f"[bold red]Path not found:[/] {input_path}")
-            raise typer.Exit(1)
-        source_label = str(input_path)
-
     else:
-        # Default: scan ./input/
-        default_dir = Path("input")
-        if not default_dir.exists():
-            console.print(
-                "[bold red]No input provided.[/] Use --text, --notes, --note #, "
-                "or --input, or place files in ./input/"
+        console.print(
+            "[bold red]No input provided.[/] Use --text, --notes, or --note #"
+        )
+        raise typer.Exit(1)
+
+    # --- Search ---
+    all_tool_results: list[dict] = []
+    final_response = ""
+
+    if parsed_items:
+        # Pre-parsed items from note: search directly (no agent reasoning needed)
+        console.print(
+            f"[bold]Searching Walmart for {len(parsed_items)} items...[/]\n"
+        )
+        for i, item in enumerate(parsed_items, 1):
+            if verbose:
+                console.print(f"[cyan]({i}/{len(parsed_items)}) Searching: {item}[/]")
+            result = search_walmart(item)
+            full_result = getattr(search_walmart, "_last_full_results", result)
+            if verbose:
+                if result:
+                    top = result[0]
+                    console.print(
+                        f"[green]  -> {top['name'][:60]} — ${top['price']:.2f}[/]"
+                    )
+                else:
+                    console.print("[yellow]  -> No results[/]")
+            all_tool_results.append(
+                {"tool": "search_walmart", "args": {"query": item}, "result": full_result}
             )
-            raise typer.Exit(1)
-        with console.status("[bold]Scanning input/ directory..."):
-            notes_inputs = ingest_directory(default_dir)
-        source_label = "input/"
+    else:
+        # Direct text input: use agent for reasoning about the items
+        user_message = f"Search Walmart for each item: {text}"
+        console.print("[bold]Starting agent...[/]\n")
+        final_response, all_tool_results = run_conversation(
+            user_message=user_message,
+            tools=TOOLS,
+            available_functions=AVAILABLE_FUNCTIONS,
+            verbose=verbose,
+        )
 
-    if not notes_inputs:
-        console.print("[bold red]No input found to process.[/]")
-        raise typer.Exit(1)
+    tool_results = all_tool_results
 
-    # --- Extraction ---
-    with console.status("[bold]Extracting grocery items..."):
-        items = process_notes(notes_inputs)
-
-    if not items:
-        console.print("[bold red]No grocery items could be extracted.[/]")
-        raise typer.Exit(1)
-
-    _display_items_table(items)
-
-    if dry_run:
-        console.print("\n[yellow]Dry run — skipping Walmart search.[/]")
-        raise typer.Exit(0)
-
-    # --- Confirm ---
-    proceed = typer.confirm(
-        f"\nFound {len(items)} items. Proceed with Walmart search?"
-    )
-    if not proceed:
-        console.print("[yellow]Cancelled.[/]")
-        raise typer.Exit(0)
-
-    # --- Search & Match ---
+    # --- Display results ---
     console.print()
-    grocery_list = process_grocery_list(items)
-    grocery_list.source_file = source_label
+    _display_results_table(tool_results)
 
-    # --- Results ---
-    console.print()
-    _display_results_table(grocery_list)
+    if final_response:
+        console.print(f"\n[bold]Agent Summary:[/]\n{final_response}")
 
     # --- Save ---
-    output_file = _save_results(grocery_list, output)
-    console.print(f"\n[green]Results saved to:[/] {output_file}")
+    if tool_results:
+        output_file = _save_results(tool_results, output, source_label)
+        console.print(f"\n[green]Results saved to:[/] {output_file}")
 
     # --- Notification ---
     if notify:
-        notify_user(grocery_list, method="all")
+        search_results = [r for r in tool_results if r["tool"] == "search_walmart"]
+        item_count = len(search_results)
+        found = sum(1 for sr in search_results if sr["result"])
+        total = sum(
+            float(sr["result"][0].get("price", 0))
+            for sr in search_results
+            if sr["result"] and isinstance(sr["result"], list)
+        )
+        msg = f"Grosme found {found}/{item_count} items. Estimated total: ${total:.2f}"
+        notify_user(message=msg, method="all")
 
 
 if __name__ == "__main__":
