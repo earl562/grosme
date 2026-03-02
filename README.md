@@ -18,13 +18,19 @@ It uses [Liquid AI's LFM-2.5 Thinking](https://www.liquid.ai/liquid-foundation-m
 ## End-to-end flow
 
 ```mermaid
-flowchart TB
-    A["Apple Notes"] -- memo CLI --> B["Parse items\nextract quantities"]
-    B -- for each item --> C["LFM-2.5 Agent"]
-    C -- search --> D["Walmart\nScrapling + Jina"]
-    D --> E["Score + Rank\nbrand, size, price"]
-    E --> F["Terminal table\ngrocery_list.json"]
-    E -- --notify --> G["Apple Calendar"]
+flowchart LR
+    A["Apple Notes\ngrocery list"] --> B["LFM-2.5\n(Ollama)"]
+    B -- tool call --> C
+    C -- tool result --> B
+    B -- done --> D["Rich table\ngrocery_list.json\ncalendar event"]
+
+    subgraph C[Tools]
+        direction TB
+        t1[fetch_notes_list]
+        t2[fetch_note_content]
+        t3[search_walmart]
+        t4[notify_user]
+    end
 ```
 
 What happens at each step:
