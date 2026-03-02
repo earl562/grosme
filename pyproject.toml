@@ -1,6 +1,6 @@
 [project]
 name = "grosme"
-version = "0.2.0"
+version = "0.3.0"
 description = "Grocery Shopping Made Easy — Apple Notes to Walmart cart"
 readme = "README.md"
 requires-python = ">=3.12"

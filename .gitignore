@@ -3,7 +3,9 @@ __pycache__/
 .env
 .venv/
 uv.lock
-output/*.json
+output/
 credentials.json
 token.json
 .DS_Store
+firebase-debug.log
+benchmarks/results.json

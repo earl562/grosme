@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120" width="400" height="120">
+  <defs>
+    <linearGradient id="cartGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#22c55e"/>
+      <stop offset="100%" style="stop-color:#16a34a"/>
+    </linearGradient>
+    <linearGradient id="noteGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#facc15"/>
+      <stop offset="100%" style="stop-color:#eab308"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Shopping cart body -->
+  <g transform="translate(16, 18)">
+    <!-- Cart basket -->
+    <path d="M28 30 L22 70 L72 70 L78 30 Z" fill="url(#cartGrad)" rx="3"/>
+    <!-- Cart handle -->
+    <path d="M10 25 L28 25" stroke="#22c55e" stroke-width="4" stroke-linecap="round" fill="none"/>
+    <path d="M10 25 L6 12" stroke="#22c55e" stroke-width="4" stroke-linecap="round" fill="none"/>
+    <!-- Cart wheels -->
+    <circle cx="32" cy="78" r="5" fill="#1e293b"/>
+    <circle cx="32" cy="78" r="2" fill="#64748b"/>
+    <circle cx="66" cy="78" r="5" fill="#1e293b"/>
+    <circle cx="66" cy="78" r="2" fill="#64748b"/>
+
+    <!-- Apple note icon (small, sitting in the cart) -->
+    <rect x="36" y="36" width="22" height="26" rx="3" fill="url(#noteGrad)" opacity="0.95"/>
+    <line x1="40" y1="43" x2="54" y2="43" stroke="#92400e" stroke-width="1.5" stroke-linecap="round"/>
+    <line x1="40" y1="48" x2="52" y2="48" stroke="#92400e" stroke-width="1.5" stroke-linecap="round"/>
+    <line x1="40" y1="53" x2="48" y2="53" stroke="#92400e" stroke-width="1.5" stroke-linecap="round"/>
+  </g>
+
+  <!-- Text: grosme -->
+  <text x="118" y="68" font-family="'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, monospace" font-size="48" font-weight="700" fill="#1e293b" letter-spacing="-1">grosme</text>
+
+  <!-- Tagline -->
+  <text x="120" y="92" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" fill="#64748b" letter-spacing="0.5">grocery shopping made easy</text>
+</svg>

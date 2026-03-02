@@ -22,6 +22,9 @@ MAX_RETRIES = 3
 REQUEST_DELAY = 1.0  # seconds between Jina requests
 SCRAPLING_REQUEST_DELAY = 2.5  # seconds between Scrapling requests
 
+# Track last Scrapling result to detect stale/cached responses
+_last_scrapling_url: str | None = None
+
 
 def jina_search(query: str) -> list[dict]:
     """Search the web via Jina AI, filtering for Walmart results.
@@ -140,12 +143,14 @@ def _parse_product_from_result(result: dict) -> WalmartProduct:
     elif "pickup" in snippet_lower or "delivery" in snippet_lower or "add to cart" in snippet_lower:
         availability = "In Stock"
 
-    return WalmartProduct(
+    product = WalmartProduct(
         name=title,
         price=price,
         url=result.get("url", ""),
         availability=availability,
     )
+    _extract_brand_size_from_name(product)
+    return product
 
 
 def _enrich_product(product: WalmartProduct) -> WalmartProduct:
@@ -206,6 +211,84 @@ def _search_walmart_jina(query: str) -> list[WalmartProduct]:
 
     time.sleep(REQUEST_DELAY)
     return products
+
+
+# --- Brand & Size Extraction ---
+
+KNOWN_BRANDS = [
+    "Great Value", "Marketside", "Driscoll's", "Hillshire Farm", "Tyson",
+    "Perdue", "InnovAsian", "Outshine", "Eggland's Best", "Land O Lakes",
+    "Oscar Mayer", "Ball Park", "Hebrew National", "Smithfield", "Hormel",
+    "Jimmy Dean", "Butterball", "Foster Farms", "Barilla", "Kraft",
+    "Heinz", "Del Monte", "Green Giant", "Birds Eye", "Stouffer's",
+    "Marie Callender's", "Banquet", "Totino's", "DiGiorno", "Red Baron",
+    "Hot Pockets", "Lean Cuisine", "Healthy Choice", "Smart Ones",
+    "Dole", "Chiquita", "Sunkist", "Ocean Spray", "Tropicana",
+    "Minute Maid", "Simply", "Fairlife", "Horizon", "Organic Valley",
+    "Silk", "Almond Breeze", "Oatly", "Chobani", "Yoplait", "Dannon",
+    "Fage", "Sargento", "Tillamook", "Cabot", "Philadelphia",
+    "Nature's Own", "Sara Lee", "Dave's Killer Bread", "Arnold",
+    "Thomas'", "Bimbo", "Pepperidge Farm", "Kellogg's", "General Mills",
+    "Post", "Quaker", "Nature Valley", "KIND", "Clif", "RXBAR",
+    "Planters", "Blue Diamond", "Wonderful", "Sun-Maid",
+    "Bumble Bee", "StarKist", "Chicken of the Sea",
+    "McCormick", "Old El Paso", "Taco Bell", "Mission", "Guerrero",
+    "La Banderita", "Ortega", "Ro-Tel", "Rotel", "Hunt's",
+    "Prego", "Ragú", "Classico", "Newman's Own", "Bertolli",
+    "Kikkoman", "Soy Vay", "Frank's RedHot", "Tabasco",
+    "Hidden Valley", "Wish-Bone", "Ken's", "Annie's",
+    "Lactaid", "Nellie's", "Pete and Gerry's", "Vital Farms",
+    "Applegate", "Boar's Head", "Columbus", "Dietz & Watson",
+]
+
+# Sort longest-first so "Eggland's Best" matches before "Best"
+KNOWN_BRANDS.sort(key=len, reverse=True)
+
+_SIZE_RE = re.compile(
+    r"(\d+\.?\d*\s*(?:oz|lb|lbs|ct|count|pk|pack|fl\s*oz|gal|gallon|qt|pt|l|ml|kg|g)\b)",
+    re.IGNORECASE,
+)
+
+_CATEGORY_WORDS = {
+    "fresh", "frozen", "all", "natural", "organic", "premium", "classic",
+    "original", "homestyle", "boneless", "skinless", "sliced", "whole",
+    "large", "medium", "small", "extra", "grade", "cage", "free", "range",
+}
+
+
+def _extract_brand_size_from_name(product: WalmartProduct) -> None:
+    """Parse brand and size from the product name if not already set."""
+    name = product.name
+
+    # Extract size
+    if not product.size:
+        size_match = _SIZE_RE.search(name)
+        if size_match:
+            product.size = size_match.group(1).strip()
+
+    # Extract brand — try known brands first
+    if not product.brand:
+        name_lower = name.lower()
+        for brand in KNOWN_BRANDS:
+            if brand.lower() in name_lower:
+                product.brand = brand
+                break
+
+        # Fallback: first word(s) before a category word
+        if not product.brand:
+            words = name.split()
+            brand_words = []
+            for w in words:
+                if w.lower().rstrip(",'s") in _CATEGORY_WORDS:
+                    break
+                brand_words.append(w)
+                if len(brand_words) >= 3:
+                    break
+            if brand_words:
+                candidate = " ".join(brand_words)
+                # Only use if it's not generic (at least one uppercase word)
+                if any(w[0].isupper() for w in brand_words if w):
+                    product.brand = candidate
 
 
 # --- Scrapling / Stealth Browser ---
@@ -318,7 +401,7 @@ def _raw_item_to_product(item: dict) -> WalmartProduct | None:
                     size = selected.get("name")
                     break
 
-    return WalmartProduct(
+    product = WalmartProduct(
         name=name,
         price=price,
         url=product_url,
@@ -327,6 +410,8 @@ def _raw_item_to_product(item: dict) -> WalmartProduct | None:
         size=size,
         brand=brand,
     )
+    _extract_brand_size_from_name(product)
+    return product
 
 
 def _parse_search_results(next_data: dict) -> list[WalmartProduct]:
@@ -398,12 +483,14 @@ def _parse_product_page(next_data: dict) -> dict:
 
 def _scrape_walmart_search(query: str) -> list[WalmartProduct]:
     """Scrape Walmart search results using Scrapling stealth browser."""
+    global _last_scrapling_url
     from scrapling.fetchers import StealthyFetcher
 
-    url = f"https://www.walmart.com/search?q={quote_plus(query)}"
+    # Cache-busting timestamp to avoid stale CDN responses
+    url = f"https://www.walmart.com/search?q={quote_plus(query)}&_t={int(time.time())}"
     console.print(f"[dim]Scraping Walmart search: {query}[/]")
 
-    page = StealthyFetcher.fetch(url, headless=True, block_images=True)
+    page = StealthyFetcher.fetch(url, headless=True, block_images=True, network_idle=True)
 
     next_data = _extract_next_data(page)
     if not next_data:
@@ -414,11 +501,65 @@ def _scrape_walmart_search(query: str) -> list[WalmartProduct]:
 
     if products:
         console.print(f"[dim]Scrapling found {len(products)} products[/]")
+        # Stale-result detection: if top product URL matches previous query's top URL
+        top_url = products[0].url if products else None
+        if top_url and top_url == _last_scrapling_url:
+            console.print("[yellow]Stale result detected (same top URL as previous search), falling back to Jina[/]")
+            _last_scrapling_url = None
+            return []
+        _last_scrapling_url = top_url
     else:
         console.print("[yellow]No products parsed from __NEXT_DATA__[/]")
 
     time.sleep(SCRAPLING_REQUEST_DELAY)
     return products[:10]
+
+
+# --- Product Relevance Scoring ---
+
+
+def _score_product(query: str, product: WalmartProduct) -> float:
+    """Score how well a product matches the search query.
+
+    Returns a float 0.0-1.0+ where higher is better.
+    """
+    query_lower = query.lower()
+    name_lower = product.name.lower()
+
+    # Word overlap score (0-1)
+    query_words = set(re.findall(r"\w+", query_lower))
+    name_words = set(re.findall(r"\w+", name_lower))
+    # Remove very common words
+    stop = {"the", "a", "an", "of", "and", "or", "for", "with", "in", "on"}
+    query_words -= stop
+    name_words -= stop
+    if query_words:
+        overlap = len(query_words & name_words) / len(query_words)
+    else:
+        overlap = 0.0
+
+    score = overlap
+
+    # Brand match bonus/penalty
+    query_brand = None
+    for brand in KNOWN_BRANDS:
+        if brand.lower() in query_lower:
+            query_brand = brand.lower()
+            break
+
+    if query_brand:
+        if product.brand and query_brand == product.brand.lower():
+            score += 0.3  # Brand match bonus
+        elif product.brand and query_brand != product.brand.lower():
+            score -= 0.2  # Wrong brand penalty
+
+    # Size match bonus
+    query_size = _SIZE_RE.search(query)
+    if query_size and product.size:
+        if query_size.group(1).lower().replace(" ", "") in product.size.lower().replace(" ", ""):
+            score += 0.1
+
+    return score
 
 
 # --- Agent-Facing Tools ---
@@ -453,9 +594,9 @@ def search_walmart(query: str) -> list[dict]:
     if not products:
         return []
 
-    # Sort by price (cheapest first), push items without price to the end
+    # Score and sort by relevance first, then price
     priced = [p for p in products if p.price is not None and p.price > 0]
-    priced.sort(key=lambda p: p.price)
+    priced.sort(key=lambda p: (-_score_product(query, p), p.price))
 
     # Store full data for Rich table display (main.py reads _last_full_results)
     top = priced[:5] if priced else products[:3]
@@ -592,30 +733,68 @@ def fetch_notes_from_folder(folder: str) -> list[dict]:
     return notes
 
 
-def notify_user(message: str, method: str = "email") -> str:
-    """Send a notification to the user about their grocery list results.
+def notify_user(message: str) -> str:
+    """Create an Apple Calendar event with the grocery list results.
+
+    Creates a calendar event for tomorrow at 10:00 AM with the grocery list
+    details in the event description.
 
     Args:
-        message: The notification message content to send.
-        method: Notification method — "email", "calendar", or "all".
+        message: The grocery list content to include in the event description.
 
     Returns:
-        A confirmation string describing what was sent.
+        A confirmation string describing the result.
     """
-    # TODO: Phase 2 — integrate Gmail API and Google Calendar API
-    confirmations = []
+    from datetime import timedelta
 
-    if method in ("email", "all"):
-        console.print(
-            f"[yellow][Phase 2][/] Would send email with message: {message[:100]}..."
+    calendar_name = os.getenv("GROSME_CALENDAR_NAME", "Calendar")
+
+    tomorrow = datetime.now() + timedelta(days=1)
+    start = tomorrow.replace(hour=10, minute=0, second=0, microsecond=0)
+    end = start + timedelta(hours=1)
+
+    # Format dates for AppleScript
+    start_str = start.strftime("%B %d, %Y %I:%M:%S %p")
+    end_str = end.strftime("%B %d, %Y %I:%M:%S %p")
+
+    # Escape special characters for AppleScript string
+    escaped_message = message.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+    applescript = f'''
+    tell application "Calendar"
+        tell calendar "{calendar_name}"
+            set newEvent to make new event with properties {{
+                summary:"Walmart Grocery Run",
+                start date:date "{start_str}",
+                end date:date "{end_str}",
+                description:"{escaped_message}"
+            }}
+        end tell
+    end tell
+    return "ok"
+    '''
+
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", applescript],
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
-        confirmations.append("email queued")
-
-    if method in ("calendar", "all"):
-        console.print(
-            f"[yellow][Phase 2][/] Would create calendar event: "
-            f"'Walmart Grocery Delivery' at {datetime.now().isoformat()}"
-        )
-        confirmations.append("calendar event queued")
-
-    return f"Notification sent via {', '.join(confirmations)}" if confirmations else "No notification method selected"
+        if result.returncode == 0:
+            console.print(
+                f"[green]Calendar event created:[/] "
+                f"'Walmart Grocery Run' on {start.strftime('%a %b %d at %I:%M %p')}"
+            )
+            return f"Calendar event created for {start_str}"
+        else:
+            error = result.stderr.strip()
+            console.print(f"[yellow]Calendar event failed:[/] {error}")
+            console.print("[dim]Tip: Set GROSME_CALENDAR_NAME env var if your calendar isn't named 'Calendar'[/]")
+            return f"Calendar event failed: {error}"
+    except FileNotFoundError:
+        console.print("[yellow]osascript not found — Apple Calendar requires macOS[/]")
+        return "Calendar event failed: osascript not available"
+    except subprocess.TimeoutExpired:
+        console.print("[yellow]Calendar event timed out[/]")
+        return "Calendar event failed: timeout"

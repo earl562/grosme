@@ -62,27 +62,38 @@ def _display_results_table(tool_results: list[dict]) -> None:
     table = Table(title="Walmart Grocery List")
     table.add_column("#", style="dim", width=4)
     table.add_column("Item", style="bold")
+    table.add_column("Qty", justify="center", width=4)
     table.add_column("Best Match")
-    table.add_column("Price", justify="right", style="green")
+    table.add_column("Brand", style="cyan")
     table.add_column("Size")
+    table.add_column("Price", justify="right", style="green")
+    table.add_column("Subtotal", justify="right", style="bold green")
 
     total = 0.0
     for i, sr in enumerate(search_results, 1):
         query = sr["args"].get("query", "?")
+        qty = sr["args"].get("quantity", 1)
         products = sr["result"]
         if products and isinstance(products, list) and len(products) > 0:
             top = products[0]
-            name = (top.get("name") or "?")[:55]
+            name = (top.get("name") or "?")[:50]
             price_val = top.get("price")
             price = f"${price_val:.2f}" if price_val else "-"
             size = top.get("size") or "-"
+            brand = top.get("brand") or "-"
             if price_val:
-                total += float(price_val)
+                subtotal = float(price_val) * qty
+                total += subtotal
+                subtotal_str = f"${subtotal:.2f}"
+            else:
+                subtotal_str = "-"
         else:
             name = "[red]No results[/]"
             price = "-"
             size = "-"
-        table.add_row(str(i), query, name, price, size)
+            brand = "-"
+            subtotal_str = "-"
+        table.add_row(str(i), query, str(qty), name, brand, size, price, subtotal_str)
 
     console.print(table)
     console.print(f"\n[bold]Estimated total: ${total:.2f}[/]")
@@ -100,19 +111,27 @@ def _save_results(tool_results: list[dict], output_dir: Path, source: str) -> Pa
 
     search_results = [r for r in tool_results if r["tool"] == "search_walmart"]
     items = []
+    total = 0.0
     for sr in search_results:
         query = sr["args"].get("query", "")
+        qty = sr["args"].get("quantity", 1)
         products = sr["result"]
         top = products[0] if products and isinstance(products, list) else None
+        subtotal = float(top["price"]) * qty if top and top.get("price") else None
+        if subtotal:
+            total += subtotal
         items.append({
             "query": query,
+            "quantity": qty,
             "matched_product": top,
+            "subtotal": subtotal,
             "status": "matched" if top else "not_found",
         })
 
     data = {
         "created_at": datetime.now().isoformat(),
         "source": source,
+        "total_estimated": round(total, 2),
         "items": items,
     }
 
@@ -120,15 +139,15 @@ def _save_results(tool_results: list[dict], output_dir: Path, source: str) -> Pa
     return output_file
 
 
-def _parse_note_lines(content: str) -> list[str]:
-    """Parse note content into grocery item lines.
+def _parse_note_lines(content: str) -> list[dict]:
+    """Parse note content into grocery item dicts with quantities.
 
-    Keeps full brand/size detail. Only strips quantity suffixes (× 2)
-    and skips blank/title lines.
+    Returns list of {"name": str, "quantity": int}.
+    Keeps full brand/size detail. Extracts quantity suffixes (× 2).
     """
     import re
 
-    items: list[str] = []
+    items: list[dict] = []
     for line in content.splitlines():
         line = line.strip()
         if not line or len(line) < 3:
@@ -136,20 +155,25 @@ def _parse_note_lines(content: str) -> list[str]:
         # Skip title-like lines (e.g. "Walmart Order")
         if line.lower().startswith(("walmart", "grocery", "shopping", "#")):
             continue
-        # Strip quantity suffix like "× 2" or "x 3"
-        line = re.sub(r"\s*[×x]\s*\d+\s*$", "", line, flags=re.IGNORECASE)
-        line = line.strip()
+        # Extract quantity suffix like "× 2" or "x 3" before stripping
+        qty = 1
+        qty_match = re.search(r"\s*[×x]\s*(\d+)\s*$", line, flags=re.IGNORECASE)
+        if qty_match:
+            qty = int(qty_match.group(1))
+            line = line[:qty_match.start()].strip()
         if line:
-            items.append(line)
+            items.append({"name": line, "quantity": qty})
 
-    # Deduplicate while preserving order
-    seen: set[str] = set()
-    unique: list[str] = []
+    # Deduplicate while combining quantities for identical items
+    seen: dict[str, int] = {}  # key -> index in unique list
+    unique: list[dict] = []
     for item in items:
-        key = item.lower()
-        if key not in seen:
-            seen.add(key)
-            unique.append(item)
+        key = item["name"].lower()
+        if key in seen:
+            unique[seen[key]]["quantity"] += item["quantity"]
+        else:
+            seen[key] = len(unique)
+            unique.append(item.copy())
 
     return unique
 
@@ -217,7 +241,7 @@ def main(
         Path("output"), "--output", "-o", help="Output directory."
     ),
     notify: bool = typer.Option(
-        False, "--notify", "-n", help="Send notification when done."
+        False, "--notify", "-n", help="Create Apple Calendar event with grocery list."
     ),
     verbose: bool = typer.Option(
         True, "--verbose/--quiet", "-v/-q", help="Show agent reasoning."
@@ -239,7 +263,7 @@ def main(
 
     # --- Build item list based on input mode ---
     source_label = ""
-    parsed_items: list[str] | None = None
+    parsed_items: list[dict] | None = None
 
     if text:
         source_label = "direct text"
@@ -286,9 +310,12 @@ def main(
             f"[bold]Searching Walmart for {len(parsed_items)} items...[/]\n"
         )
         for i, item in enumerate(parsed_items, 1):
+            name = item["name"]
+            qty = item["quantity"]
+            qty_label = f" (×{qty})" if qty > 1 else ""
             if verbose:
-                console.print(f"[cyan]({i}/{len(parsed_items)}) Searching: {item}[/]")
-            result = search_walmart(item)
+                console.print(f"[cyan]({i}/{len(parsed_items)}) Searching: {name}{qty_label}[/]")
+            result = search_walmart(name)
             full_result = getattr(search_walmart, "_last_full_results", result)
             if verbose:
                 if result:
@@ -299,7 +326,7 @@ def main(
                 else:
                     console.print("[yellow]  -> No results[/]")
             all_tool_results.append(
-                {"tool": "search_walmart", "args": {"query": item}, "result": full_result}
+                {"tool": "search_walmart", "args": {"query": name, "quantity": qty}, "result": full_result}
             )
     else:
         # Direct text input: use agent for reasoning about the items
@@ -331,13 +358,26 @@ def main(
         search_results = [r for r in tool_results if r["tool"] == "search_walmart"]
         item_count = len(search_results)
         found = sum(1 for sr in search_results if sr["result"])
-        total = sum(
-            float(sr["result"][0].get("price", 0))
-            for sr in search_results
-            if sr["result"] and isinstance(sr["result"], list)
-        )
-        msg = f"Grosme found {found}/{item_count} items. Estimated total: ${total:.2f}"
-        notify_user(message=msg, method="all")
+
+        # Build detailed item lines for calendar event
+        item_lines = []
+        total = 0.0
+        for sr in search_results:
+            query = sr["args"].get("query", "?")
+            qty = sr["args"].get("quantity", 1)
+            products = sr["result"]
+            if products and isinstance(products, list) and products[0].get("price"):
+                price = float(products[0]["price"])
+                subtotal = price * qty
+                total += subtotal
+                qty_label = f" (x{qty})" if qty > 1 else ""
+                item_lines.append(f"- {query}{qty_label}: ${subtotal:.2f}")
+            else:
+                item_lines.append(f"- {query}: not found")
+
+        description = "\n".join(item_lines)
+        description += f"\n\nTotal: ${total:.2f} ({found}/{item_count} items found)"
+        notify_user(message=description)
 
 
 if __name__ == "__main__":

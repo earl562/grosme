@@ -1,4 +1,4 @@
-.PHONY: setup run lint clean test check-ollama format run-text uat uat-query uat-memo
+.PHONY: setup run lint clean test check-ollama format run-text uat uat-query uat-memo demo notify-test benchmark
 
 setup:
 	uv sync
@@ -34,6 +34,15 @@ uat-memo:
 
 check-ollama:
 	@ollama list | grep -q "lfm2.5-thinking" && echo "Model ready" || echo "Run: ollama pull lfm2.5-thinking:1.2b"
+
+demo:
+	uv run python main.py --text "Eggland's Best Eggs 18 ct, Driscoll's Strawberries 1 lb, Whole Milk Gallon"
+
+notify-test:
+	uv run python main.py --text "milk, eggs, bread" --notify
+
+benchmark:
+	uv run python benchmarks/accuracy.py
 
 clean:
 	rm -rf output/*.json __pycache__ .pytest_cache
