@@ -19,25 +19,21 @@ It uses [Liquid AI's LFM-2.5 Thinking](https://www.liquid.ai/liquid-foundation-m
 
 ```mermaid
 architecture-beta
-    group tools(disk)[Tools]
-
     service notes(cloud)[Apple Notes]
-    service llm(server)[LFM 2.5 Agent]
-    service fetchnotes(disk)[fetch notes] in tools
-    service fetchcontent(disk)[fetch content] in tools
-    service search(internet)[search walmart] in tools
-    service notifyuser(disk)[notify user] in tools
-    service results(cloud)[Results]
+    service agent(server)[LFM-2.5 Agent]
+    service output(disk)[Results]
 
-    junction toolhub in tools
+    group tools(cloud)[Tools]
+        service fetch(database)[fetch notes]
+        service search(internet)[search walmart]
+        service notify(disk)[notify user]
+    end
 
-    notes:R --> L:llm
-    llm:B --> T:toolhub
-    toolhub:L -- L:fetchnotes
-    toolhub:R -- R:search
-    toolhub:T -- T:fetchcontent
-    toolhub:B -- B:notifyuser
-    llm:R --> L:results
+    notes -- reads --> agent
+    agent -- tool call --> fetch
+    agent -- tool call --> search
+    agent -- tool call --> notify
+    agent -- done --> output
 ```
 
 What happens at each step:
