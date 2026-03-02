@@ -18,22 +18,22 @@ It uses [Liquid AI's LFM-2.5 Thinking](https://www.liquid.ai/liquid-foundation-m
 ## End-to-end flow
 
 ```mermaid
-architecture-beta
-    service notes(cloud)[Apple Notes]
-    service agent(server)[LFM-2.5 Agent]
-    service output(disk)[Results]
+flowchart TB
+    notes(["Apple Notes"])
+    cli["grosme CLI\nparse items, extract quantities"]
+    agent["LFM-2.5 Agent via Ollama"]
 
-    group tools(cloud)[Tools]
-        service fetch(database)[fetch notes]
-        service search(internet)[search walmart]
-        service notify(disk)[notify user]
-    end
+    notes --> cli --> agent
 
-    notes -- reads --> agent
-    agent -- tool call --> fetch
-    agent -- tool call --> search
-    agent -- tool call --> notify
-    agent -- done --> output
+    agent <--> fetch_notes["fetch_notes_list"]
+    agent <--> fetch_content["fetch_note_content"]
+    agent <--> search["search_walmart\nScrapling + Jina fallback"]
+    agent <--> notify["notify_user\nosascript → Apple Calendar"]
+
+    agent --> score["Score + Rank\nbrand, keywords, size, price"]
+    score --> table(["Terminal table"])
+    score --> json(["grocery_list.json"])
+    score --> calendar(["Calendar event"])
 ```
 
 What happens at each step:
