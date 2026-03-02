@@ -19,15 +19,19 @@ It uses [Liquid AI's LFM-2.5 Thinking](https://www.liquid.ai/liquid-foundation-m
 
 ```mermaid
 flowchart TB
-    A["Apple Notes\ngrocery list"] --> B[LFM-2.5 Agent]
+    A["Apple Notes\ngrocery list"]
+    B[LFM-2.5 Agent]
+    D["grocery_list.json\nterminal table\ncalendar event"]
+
+    A --> B
     B -- tool call --> C
     C -- tool result --> B
-    B -- done --> D["grocery_list.json\nterminal table\ncalendar event"]
+    B -- done --> D
 
     subgraph C[Tools]
         direction LR
-        search_walmart
         fetch_notes
+        search_walmart
         notify_user
     end
 ```
