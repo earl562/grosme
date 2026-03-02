@@ -19,34 +19,25 @@ It uses [Liquid AI's LFM-2.5 Thinking](https://www.liquid.ai/liquid-foundation-m
 
 ```mermaid
 architecture-beta
-    group input(cloud)[Input]
-    group agent(server)[Agent]
     group tools(disk)[Tools]
-    group output(cloud)[Output]
 
-    service notes(disk)[Apple Notes] in input
-    service cli(server)[grosme CLI] in input
+    service notes(cloud)[Apple Notes]
+    service llm(server)[LFM 2.5 Agent]
+    service fetchnotes(disk)[fetch notes] in tools
+    service fetchcontent(disk)[fetch content] in tools
+    service search(internet)[search walmart] in tools
+    service notifyuser(disk)[notify user] in tools
+    service results(cloud)[Results]
 
-    service llm(server)[LFM-2.5 Ollama] in agent
+    junction toolhub in tools
 
-    service fetch_notes(disk)[fetch_notes_list] in tools
-    service fetch_content(disk)[fetch_note_content] in tools
-    service search(internet)[search_walmart] in tools
-    service notify(disk)[notify_user] in tools
-
-    service table(server)[Rich Table] in output
-    service json(disk)[grocery_list.json] in output
-    service calendar(disk)[Apple Calendar] in output
-
-    notes:R --> L:cli
-    cli:R --> L:llm
-    llm:B --> T:fetch_notes
-    llm:B --> T:fetch_content
-    llm:B --> T:search
-    llm:B --> T:notify
-    llm:R --> L:table
-    llm:R --> L:json
-    llm:R --> L:calendar
+    notes:R --> L:llm
+    llm:B --> T:toolhub
+    toolhub:L -- L:fetchnotes
+    toolhub:R -- R:search
+    toolhub:T -- T:fetchcontent
+    toolhub:B -- B:notifyuser
+    llm:R --> L:results
 ```
 
 What happens at each step:
