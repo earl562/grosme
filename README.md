@@ -18,19 +18,35 @@ It uses [Liquid AI's LFM-2.5 Thinking](https://www.liquid.ai/liquid-foundation-m
 ## End-to-end flow
 
 ```mermaid
-flowchart LR
-    A["Apple Notes\ngrocery list"] --> B["LFM-2.5\n(Ollama)"]
-    B -- tool call --> C
-    C -- tool result --> B
-    B -- done --> D["Rich table\ngrocery_list.json\ncalendar event"]
+architecture-beta
+    group input(cloud)[Input]
+    group agent(server)[Agent]
+    group tools(disk)[Tools]
+    group output(cloud)[Output]
 
-    subgraph C[Tools]
-        direction TB
-        t1[fetch_notes_list]
-        t2[fetch_note_content]
-        t3[search_walmart]
-        t4[notify_user]
-    end
+    service notes(disk)[Apple Notes] in input
+    service cli(server)[grosme CLI] in input
+
+    service llm(server)[LFM-2.5 Ollama] in agent
+
+    service fetch_notes(disk)[fetch_notes_list] in tools
+    service fetch_content(disk)[fetch_note_content] in tools
+    service search(internet)[search_walmart] in tools
+    service notify(disk)[notify_user] in tools
+
+    service table(server)[Rich Table] in output
+    service json(disk)[grocery_list.json] in output
+    service calendar(disk)[Apple Calendar] in output
+
+    notes:R --> L:cli
+    cli:R --> L:llm
+    llm:B --> T:fetch_notes
+    llm:B --> T:fetch_content
+    llm:B --> T:search
+    llm:B --> T:notify
+    llm:R --> L:table
+    llm:R --> L:json
+    llm:R --> L:calendar
 ```
 
 What happens at each step:
